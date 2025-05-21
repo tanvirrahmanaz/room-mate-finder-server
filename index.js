@@ -42,14 +42,14 @@ async function run() {
   try {
     // Connect the client to the server (optional starting in v4.7)
     await client.connect();
-    
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
-    
+
     // Set up API routes that use the database
     setupRoutes();
-    
+
   } catch (error) {
     console.error("MongoDB connection error:", error);
     // Don't close the client on error, just log it
@@ -63,7 +63,7 @@ function setupRoutes() {
   });
 
 
-   // POST route to add new room listing
+  // POST route to add new room listing
   app.post('/rooms', async (req, res) => {
     try {
       const roomData = req.body;
@@ -80,8 +80,22 @@ function setupRoutes() {
       res.status(500).json({ message: 'Internal Server Error' });
     }
   });
-  
-  
+
+
+  app.get('/rooms', async (req, res) => {
+    const email = req.query.email;
+    const filter = email ? { userEmail: email } : {};
+    const rooms = await roomsCollection.find(filter).toArray();
+    res.send(rooms);
+  });
+
+  app.delete('/rooms/:id', async (req, res) => {
+    const id = req.params.id;
+    const result = await roomsCollection.deleteOne({ _id: new ObjectId(id) });
+    res.send(result);
+  });
+
+
 }
 
 // Start the MongoDB connection and server
