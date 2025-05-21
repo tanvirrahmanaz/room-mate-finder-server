@@ -61,6 +61,25 @@ function setupRoutes() {
   app.get('/', (req, res) => {
     res.send('Room Mate Finder API is running!');
   });
+
+
+   // POST route to add new room listing
+  app.post('/rooms', async (req, res) => {
+    try {
+      const roomData = req.body;
+
+      // Basic validation (optional)
+      if (!roomData.title || !roomData.location || !roomData.rentAmount) {
+        return res.status(400).json({ message: 'Missing required fields' });
+      }
+
+      const result = await roomsCollection.insertOne(roomData);
+      res.status(201).json({ message: 'Room listing added', insertedId: result.insertedId });
+    } catch (error) {
+      console.error('Error adding room:', error);
+      res.status(500).json({ message: 'Internal Server Error' });
+    }
+  });
   
   
 }
