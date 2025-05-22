@@ -96,6 +96,14 @@ function setupRoutes() {
   });
 
 
+
+  app.get('/rooms/available', async (req, res) => {
+    const rooms = await roomsCollection.find({ availability: true }).limit(6).toArray();
+    res.send(rooms);
+  });
+
+
+
 }
 
 // Start the MongoDB connection and server
