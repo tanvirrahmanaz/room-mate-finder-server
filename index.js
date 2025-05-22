@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const { MongoClient, ServerApiVersion } = require('mongodb');
 require('dotenv').config();
+const { ObjectId } = require('mongodb'); 
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -102,7 +103,38 @@ function setupRoutes() {
     res.send(rooms);
   });
 
+  app.put('/rooms/:id', async (req, res) => {
+  const id = req.params.id;
+  const { _id, ...updatedData } = req.body; // Prevent _id from being updated
 
+  try {
+    const result = await roomsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+    res.send(result);
+  } catch (error) {
+    console.error('Update failed:', error);
+    res.status(500).send({ message: 'Update failed' });
+  }
+});
+
+  app.get('/rooms/:id', async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    const room = await roomsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!room) {
+      return res.status(404).send({ message: 'Room not found' });
+    }
+
+    res.send(room);
+  } catch (error) {
+    console.error('Error fetching room by ID:', error);
+    res.status(500).send({ message: 'Server error' });
+  }
+});
 
 }
 
