@@ -176,158 +176,213 @@ function setupRoutes() {
     }
   });
 
-  // LIKE a room (POST)
-  app.post('/rooms/:id/like', verifyToken, async (req, res) => {
-    try {
-      const roomId = req.params.id;
-      const userId = req.user.id || req.user.email; // Use user ID or email from token
-
-      // Check if user already liked this room
-      const existingLike = await likesCollection.findOne({
-        roomId: roomId,
-        userId: userId
-      });
-
-      if (existingLike) {
-        return res.status(400).json({ message: 'You have already liked this room' });
-      }
-
-      // Add like to likes collection
+  // LIKE a room (POST) - Modified to allow multiple likes
+app.post('/rooms/:id/like', verifyToken, async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const userId = req.user.id || req.user.email;
+    const forceMultiple = req.query.force === 'true';
+    
+    // Check if the room exists and get room owner info
+    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+    
+    // Prevent users from liking their own posts
+    const isOwner = (
+      userId === room.ownerId || 
+      userId === room.userId || 
+      userId === room.userUid || 
+      userId === room.createdBy ||
+      userId === room.owner?.uid ||
+      userId === room.owner?.id ||
+      userId === room.userEmail ||
+      req.user.email === room.userEmail
+    );
+    
+    if (isOwner) {
+      return res.status(400).json({ message: 'You cannot like your own room posting' });
+    }
+    
+    // For multiple likes, always add a new like entry
+    if (forceMultiple) {
       await likesCollection.insertOne({
         roomId: roomId,
         userId: userId,
         createdAt: new Date()
       });
-
+      
       // Update room's like count
-      const result = await roomsCollection.updateOne(
+      await roomsCollection.updateOne(
         { _id: new ObjectId(roomId) },
         { $inc: { likeCount: 1 } }
       );
-
-      if (result.matchedCount === 0) {
-        return res.status(404).json({ message: 'Room not found' });
-      }
-
+      
       // Get updated room data
       const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-
-      res.json({ 
+      
+      return res.json({ 
         message: 'Room liked successfully',
         likeCount: updatedRoom.likeCount,
         hasLiked: true
       });
-
-    } catch (error) {
-      console.error('Error liking room:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
     }
-  });
-
-  // UNLIKE a room (DELETE)
-  app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
-    try {
-      const roomId = req.params.id;
-      const userId = req.user.id || req.user.email;
-
-      // Check if user has liked this room
-      const existingLike = await likesCollection.findOne({
-        roomId: roomId,
-        userId: userId
-      });
-
-      if (!existingLike) {
-        return res.status(400).json({ message: 'You have not liked this room' });
-      }
-
-      // Remove like from likes collection
-      await likesCollection.deleteOne({
-        roomId: roomId,
-        userId: userId
-      });
-
-      // Update room's like count
-      const result = await roomsCollection.updateOne(
-        { _id: new ObjectId(roomId) },
-        { $inc: { likeCount: -1 } }
-      );
-
-      if (result.matchedCount === 0) {
-        return res.status(404).json({ message: 'Room not found' });
-      }
-
-      // Get updated room data
-      const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-
-      res.json({ 
-        message: 'Room unliked successfully',
-        likeCount: Math.max(0, updatedRoom.likeCount), // Ensure count doesn't go below 0
-        hasLiked: false
-      });
-
-    } catch (error) {
-      console.error('Error unliking room:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+    
+    // Original logic for single like (if force is not enabled)
+    const existingLike = await likesCollection.findOne({
+      roomId: roomId,
+      userId: userId
+    });
+    
+    if (existingLike) {
+      return res.status(400).json({ message: 'You have already liked this room' });
     }
-  });
+    
+    // Add like to likes collection
+    await likesCollection.insertOne({
+      roomId: roomId,
+      userId: userId,
+      createdAt: new Date()
+    });
+    
+    // Update room's like count
+    const result = await roomsCollection.updateOne(
+      { _id: new ObjectId(roomId) },
+      { $inc: { likeCount: 1 } }
+    );
+    
+    // Get updated room data
+    const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+    res.json({ 
+      message: 'Room liked successfully',
+      likeCount: updatedRoom.likeCount,
+      hasLiked: true
+    });
+  } catch (error) {
+    console.error('Error liking room:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
-  // CHECK if user has liked a room
-  app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
-    try {
-      const roomId = req.params.id;
-      const userId = req.user.id || req.user.email;
-
-      const existingLike = await likesCollection.findOne({
-        roomId: roomId,
-        userId: userId
-      });
-
-      // Get room's current like count
-      const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-
-      res.json({
-        hasLiked: !!existingLike,
-        likeCount: room ? room.likeCount || 0 : 0
-      });
-
-    } catch (error) {
-      console.error('Error checking like status:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+// UNLIKE a room (DELETE) - Keep as is but add owner check
+app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const userId = req.user.id || req.user.email;
+    
+    // Check if the room exists and get room owner info
+    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
     }
-  });
+    
+    // Prevent users from unliking their own posts (they shouldn't be able to like them first)
+    const isOwner = (
+      userId === room.ownerId || 
+      userId === room.userId || 
+      userId === room.userUid || 
+      userId === room.createdBy ||
+      userId === room.owner?.uid ||
+      userId === room.owner?.id ||
+      userId === room.userEmail ||
+      req.user.email === room.userEmail
+    );
+    
+    if (isOwner) {
+      return res.status(400).json({ message: 'You cannot unlike your own room posting' });
+    }
+    
+    // Check if user has liked this room
+    const existingLike = await likesCollection.findOne({
+      roomId: roomId,
+      userId: userId
+    });
+    
+    if (!existingLike) {
+      return res.status(400).json({ message: 'You have not liked this room' });
+    }
+    
+    // Remove like from likes collection
+    await likesCollection.deleteOne({
+      roomId: roomId,
+      userId: userId
+    });
+    
+    // Update room's like count
+    const result = await roomsCollection.updateOne(
+      { _id: new ObjectId(roomId) },
+      { $inc: { likeCount: -1 } }
+    );
+    
+    // Get updated room data
+    const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+    res.json({ 
+      message: 'Room unliked successfully',
+      likeCount: Math.max(0, updatedRoom.likeCount),
+      hasLiked: false
+    });
+  } catch (error) {
+    console.error('Error unliking room:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
-  // GET all users who liked a specific room (for room owner)
-  app.get('/rooms/:id/likes', verifyToken, async (req, res) => {
-    try {
-      const roomId = req.params.id;
+// CHECK if user has liked a room - Keep as is
+app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const userId = req.user.id || req.user.email;
+    
+    const existingLike = await likesCollection.findOne({
+      roomId: roomId,
+      userId: userId
+    });
+    
+    // Get room's current like count
+    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+    
+    res.json({
+      hasLiked: !!existingLike,
+      likeCount: room ? room.likeCount || 0 : 0
+    });
+  } catch (error) {
+    console.error('Error checking like status:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
-      // Get all likes for this room with user details
-      const likes = await likesCollection.aggregate([
-        { $match: { roomId: roomId } },
-        {
-          $lookup: {
-            from: "users",
-            localField: "userId",
-            foreignField: "email", // or "_id" depending on your user ID structure
-            as: "userDetails"
-          }
-        },
-        {
-          $project: {
-            userId: 1,
-            createdAt: 1,
-            userDetails: { $arrayElemAt: ["$userDetails", 0] }
-          }
+// GET all users who liked a specific room (for room owner) - Keep as is
+app.get('/rooms/:id/likes', verifyToken, async (req, res) => {
+  try {
+    const roomId = req.params.id;
+    
+    // Get all likes for this room with user details
+    const likes = await likesCollection.aggregate([
+      { $match: { roomId: roomId } },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "email",
+          as: "userDetails"
         }
-      ]).toArray();
-
-      res.json(likes);
-
-    } catch (error) {
-      console.error('Error fetching likes:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
-    }
-  });
+      },
+      {
+        $project: {
+          userId: 1,
+          createdAt: 1,
+          userDetails: { $arrayElemAt: ["$userDetails", 0] }
+        }
+      }
+    ]).toArray();
+    
+    res.json(likes);
+  } catch (error) {
+    console.error('Error fetching likes:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 }
 
 // Start the MongoDB connection and server
