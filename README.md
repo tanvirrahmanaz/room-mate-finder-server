@@ -3,7 +3,7 @@
 Backend server for the Room Mate Finder application. Built with Node.js, Express, and MongoDB.
 
 ## Live API
-[Room Mate Finder API](https://room-mate-finder-server.vercel.app/)
+[Room Mate Finder API](https://room-mate-finderbd.web.app/)
 
 ## Features
 

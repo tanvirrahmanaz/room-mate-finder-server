@@ -8,7 +8,13 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: ['https://room-mate-finderbd.web.app/'], // your frontend domain
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true // if you use cookies/auth
+}));
+
 app.use(express.json());
 
 // MongoDB Connection URI
@@ -112,7 +118,7 @@ app.post('/rooms', async (req, res) => {
 });
 
 // GET all rooms
-app.get('/rooms', async (req, res) => {
+app.get('/rooms', verifyToken, async (req, res) => {
   try {
     console.log('GET /rooms called');
     
