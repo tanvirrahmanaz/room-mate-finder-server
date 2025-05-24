@@ -11,9 +11,6 @@ const port = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Debug environment variables
-console.log("DB_USER:", process.env.DB_USER);
-
 // MongoDB Connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.xlzkxri.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -32,12 +29,9 @@ const client = new MongoClient(uri, {
 });
 
 // Database collections
-const database = client.db("roomMateFinder");
-const roomsCollection = database.collection("rooms");
-const usersCollection = database.collection("users");
-const likesCollection = database.collection("likes"); // New collection for likes
+let database, roomsCollection, usersCollection, likesCollection;
 
-// JWT verification middleware (basic - you might want to use jsonwebtoken library)
+// JWT verification middleware
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   
@@ -47,9 +41,7 @@ const verifyToken = (req, res, next) => {
   
   const token = authHeader.substring(7);
   
-  // For now, we'll just decode the token manually (you should use proper JWT verification)
   try {
-    // This is a simplified version - in production, use proper JWT verification
     const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
     req.user = payload;
     next();
@@ -58,138 +50,181 @@ const verifyToken = (req, res, next) => {
   }
 };
 
-async function run() {
+// Initialize MongoDB connection
+async function connectDB() {
   try {
-    await client.connect();
-    await client.db("admin").command({ ping: 1 });
-    console.log("Pinged your deployment. You successfully connected to MongoDB!");
-    setupRoutes();
+    if (!database) {
+      await client.connect();
+      await client.db("admin").command({ ping: 1 });
+      console.log("Connected to MongoDB!");
+      
+      // Initialize collections
+      database = client.db("roomMateFinder");
+      roomsCollection = database.collection("rooms");
+      usersCollection = database.collection("users");
+      likesCollection = database.collection("likes");
+    }
+    return true;
   } catch (error) {
     console.error("MongoDB connection error:", error);
+    return false;
   }
 }
 
-function setupRoutes() {
-  // Base route
-  app.get('/', (req, res) => {
-    res.send('Room Mate Finder API is running!');
-  });
+// Base route
+app.get('/', (req, res) => {
+  res.json({ message: 'Room Mate Finder API is running!' });
+});
 
-  // POST route to add new room listing
-  app.post('/rooms', async (req, res) => {
-    try {
-      const roomData = {
-        ...req.body,
-        likeCount: 0, // Initialize like count
-        createdAt: new Date()
-      };
-
-      if (!roomData.title || !roomData.location || !roomData.rentAmount) {
-        return res.status(400).json({ message: 'Missing required fields' });
-      }
-
-      const result = await roomsCollection.insertOne(roomData);
-      res.status(201).json({ message: 'Room listing added', insertedId: result.insertedId });
-    } catch (error) {
-      console.error('Error adding room:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+// Debug route
+app.get('/debug', (req, res) => {
+  res.json({ 
+    message: 'Debug route working',
+    env: {
+      hasDBUser: !!process.env.DB_USER,
+      hasDBPass: !!process.env.DB_PASS,
+      nodeEnv: process.env.NODE_ENV
     }
   });
+});
 
-  // GET all rooms
-  app.get('/rooms', async (req, res) => {
-    try {
-      const email = req.query.email;
-      const filter = email ? { userEmail: email } : {};
-      const rooms = await roomsCollection.find(filter).toArray();
-      res.send(rooms);
-    } catch (error) {
-      console.error('Error fetching rooms:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+// POST route to add new room listing
+app.post('/rooms', async (req, res) => {
+  try {
+    await connectDB();
+    
+    const roomData = {
+      ...req.body,
+      likeCount: 0,
+      createdAt: new Date()
+    };
+
+    if (!roomData.title || !roomData.location || !roomData.rentAmount) {
+      return res.status(400).json({ message: 'Missing required fields' });
     }
-  });
 
-  // DELETE room
-  app.delete('/rooms/:id', async (req, res) => {
-    try {
-      const id = req.params.id;
-      
-      // Also delete all likes for this room
-      await likesCollection.deleteMany({ roomId: id });
-      
-      const result = await roomsCollection.deleteOne({ _id: new ObjectId(id) });
-      res.send(result);
-    } catch (error) {
-      console.error('Error deleting room:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
+    const result = await roomsCollection.insertOne(roomData);
+    res.status(201).json({ message: 'Room listing added', insertedId: result.insertedId });
+  } catch (error) {
+    console.error('Error adding room:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// GET all rooms
+app.get('/rooms', async (req, res) => {
+  try {
+    console.log('GET /rooms called');
+    
+    const connected = await connectDB();
+    if (!connected) {
+      return res.status(500).json({ message: 'Database connection failed' });
     }
-  });
+    
+    console.log('Database connected, fetching rooms...');
+    
+    const email = req.query.email;
+    const filter = email ? { userEmail: email } : {};
+    const rooms = await roomsCollection.find(filter).toArray();
+    
+    console.log(`Found ${rooms.length} rooms`);
+    res.json(rooms);
+  } catch (error) {
+    console.error('Error fetching rooms:', error);
+    res.status(500).json({ 
+      message: 'Internal Server Error', 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
 
-  // GET available rooms
-  app.get('/rooms/available', async (req, res) => {
-    try {
-      const rooms = await roomsCollection.find({ availability: true }).limit(6).toArray();
-      res.send(rooms);
-    } catch (error) {
-      console.error('Error fetching available rooms:', error);
-      res.status(500).json({ message: 'Internal Server Error' });
-    }
-  });
+// DELETE room
+app.delete('/rooms/:id', async (req, res) => {
+  try {
+    await connectDB();
+    
+    const id = req.params.id;
+    
+    await likesCollection.deleteMany({ roomId: id });
+    const result = await roomsCollection.deleteOne({ _id: new ObjectId(id) });
+    res.json(result);
+  } catch (error) {
+    console.error('Error deleting room:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
 
-  // UPDATE room
-  app.put('/rooms/:id', async (req, res) => {
+// GET available rooms
+app.get('/rooms/available', async (req, res) => {
+  try {
+    await connectDB();
+    
+    const rooms = await roomsCollection.find({ availability: true }).limit(6).toArray();
+    res.json(rooms);
+  } catch (error) {
+    console.error('Error fetching available rooms:', error);
+    res.status(500).json({ message: 'Internal Server Error' });
+  }
+});
+
+// UPDATE room
+app.put('/rooms/:id', async (req, res) => {
+  try {
+    await connectDB();
+    
     const id = req.params.id;
     const { _id, ...updatedData } = req.body;
 
-    try {
-      const result = await roomsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { 
-          $set: {
-            ...updatedData,
-            updatedAt: new Date()
-          }
+    const result = await roomsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { 
+        $set: {
+          ...updatedData,
+          updatedAt: new Date()
         }
-      );
-      res.send(result);
-    } catch (error) {
-      console.error('Update failed:', error);
-      res.status(500).send({ message: 'Update failed' });
-    }
-  });
-
-  // GET single room by ID
-  app.get('/rooms/:id', async (req, res) => {
-    const id = req.params.id;
-
-    try {
-      const room = await roomsCollection.findOne({ _id: new ObjectId(id) });
-
-      if (!room) {
-        return res.status(404).send({ message: 'Room not found' });
       }
+    );
+    res.json(result);
+  } catch (error) {
+    console.error('Update failed:', error);
+    res.status(500).json({ message: 'Update failed' });
+  }
+});
 
-      res.send(room);
-    } catch (error) {
-      console.error('Error fetching room by ID:', error);
-      res.status(500).send({ message: 'Server error' });
+// GET single room by ID
+app.get('/rooms/:id', async (req, res) => {
+  try {
+    await connectDB();
+    
+    const id = req.params.id;
+    const room = await roomsCollection.findOne({ _id: new ObjectId(id) });
+
+    if (!room) {
+      return res.status(404).json({ message: 'Room not found' });
     }
-  });
 
-  // LIKE a room (POST) - Modified to allow multiple likes
+    res.json(room);
+  } catch (error) {
+    console.error('Error fetching room by ID:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// LIKE a room (POST)
 app.post('/rooms/:id/like', verifyToken, async (req, res) => {
   try {
+    await connectDB();
+    
     const roomId = req.params.id;
     const userId = req.user.id || req.user.email;
     const forceMultiple = req.query.force === 'true';
     
-    // Check if the room exists and get room owner info
     const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
     if (!room) {
       return res.status(404).json({ message: 'Room not found' });
     }
     
-    // Prevent users from liking their own posts
     const isOwner = (
       userId === room.ownerId || 
       userId === room.userId || 
@@ -205,7 +240,6 @@ app.post('/rooms/:id/like', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'You cannot like your own room posting' });
     }
     
-    // For multiple likes, always add a new like entry
     if (forceMultiple) {
       await likesCollection.insertOne({
         roomId: roomId,
@@ -213,13 +247,11 @@ app.post('/rooms/:id/like', verifyToken, async (req, res) => {
         createdAt: new Date()
       });
       
-      // Update room's like count
       await roomsCollection.updateOne(
         { _id: new ObjectId(roomId) },
         { $inc: { likeCount: 1 } }
       );
       
-      // Get updated room data
       const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
       
       return res.json({ 
@@ -229,7 +261,6 @@ app.post('/rooms/:id/like', verifyToken, async (req, res) => {
       });
     }
     
-    // Original logic for single like (if force is not enabled)
     const existingLike = await likesCollection.findOne({
       roomId: roomId,
       userId: userId
@@ -239,20 +270,17 @@ app.post('/rooms/:id/like', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'You have already liked this room' });
     }
     
-    // Add like to likes collection
     await likesCollection.insertOne({
       roomId: roomId,
       userId: userId,
       createdAt: new Date()
     });
     
-    // Update room's like count
-    const result = await roomsCollection.updateOne(
+    await roomsCollection.updateOne(
       { _id: new ObjectId(roomId) },
       { $inc: { likeCount: 1 } }
     );
     
-    // Get updated room data
     const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
     res.json({ 
       message: 'Room liked successfully',
@@ -265,19 +293,19 @@ app.post('/rooms/:id/like', verifyToken, async (req, res) => {
   }
 });
 
-// UNLIKE a room (DELETE) - Keep as is but add owner check
+// UNLIKE a room (DELETE)
 app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
   try {
+    await connectDB();
+    
     const roomId = req.params.id;
     const userId = req.user.id || req.user.email;
     
-    // Check if the room exists and get room owner info
     const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
     if (!room) {
       return res.status(404).json({ message: 'Room not found' });
     }
     
-    // Prevent users from unliking their own posts (they shouldn't be able to like them first)
     const isOwner = (
       userId === room.ownerId || 
       userId === room.userId || 
@@ -293,7 +321,6 @@ app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'You cannot unlike your own room posting' });
     }
     
-    // Check if user has liked this room
     const existingLike = await likesCollection.findOne({
       roomId: roomId,
       userId: userId
@@ -303,19 +330,16 @@ app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'You have not liked this room' });
     }
     
-    // Remove like from likes collection
     await likesCollection.deleteOne({
       roomId: roomId,
       userId: userId
     });
     
-    // Update room's like count
-    const result = await roomsCollection.updateOne(
+    await roomsCollection.updateOne(
       { _id: new ObjectId(roomId) },
       { $inc: { likeCount: -1 } }
     );
     
-    // Get updated room data
     const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
     res.json({ 
       message: 'Room unliked successfully',
@@ -328,9 +352,11 @@ app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
   }
 });
 
-// CHECK if user has liked a room - Keep as is
+// CHECK if user has liked a room
 app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
   try {
+    await connectDB();
+    
     const roomId = req.params.id;
     const userId = req.user.id || req.user.email;
     
@@ -339,7 +365,6 @@ app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
       userId: userId
     });
     
-    // Get room's current like count
     const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
     
     res.json({
@@ -352,12 +377,13 @@ app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
   }
 });
 
-// GET all users who liked a specific room (for room owner) - Keep as is
+// GET all users who liked a specific room
 app.get('/rooms/:id/likes', verifyToken, async (req, res) => {
   try {
+    await connectDB();
+    
     const roomId = req.params.id;
     
-    // Get all likes for this room with user details
     const likes = await likesCollection.aggregate([
       { $match: { roomId: roomId } },
       {
@@ -383,12 +409,6 @@ app.get('/rooms/:id/likes', verifyToken, async (req, res) => {
     res.status(500).json({ message: 'Internal Server Error' });
   }
 });
-}
 
-// Start the MongoDB connection and server
-run().catch(console.dir);
-
-// Start the Express server
-app.listen(port, () => {
-  console.log(`Room Mate Finder server is running on http://localhost:${port}`);
-});
+// For Vercel serverless function
+module.exports = app;

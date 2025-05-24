@@ -1,5 +1,5 @@
 {
-  "name": "room-mate-finder",
+  "name": "room-mate-finder-server",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
