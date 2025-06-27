@@ -1,420 +1,210 @@
 const express = require('express');
 const cors = require('cors');
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
-const { ObjectId } = require('mongodb'); 
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 5000;
 
-// Middleware
+// --- Middleware ---
 app.use(cors({
-  origin: ['https://room-mate-finderbd.web.app/'], // your frontend domain
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true // if you use cookies/auth
+    origin: ['http://localhost:5173', 'https://room-mate-finderbd.web.app'],
+    credentials: true
 }));
-
 app.use(express.json());
 
-// MongoDB Connection URI
+// --- MongoDB Connection ---
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.xlzkxri.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
-
-// Create a MongoClient with a MongoClientOptions object
 const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  },
-  ssl: true,
-  tls: true,
-  tlsAllowInvalidCertificates: true,
-  useNewUrlParser: true,
-  useUnifiedTopology: true
+    serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true }
 });
 
-// Database collections
-let database, roomsCollection, usersCollection, likesCollection;
+// --- Database Connection and Collection Initialization ---
+// This pattern connects once and reuses the connection, which is efficient.
+const db = client.db("roomMateFinder");
+const roomsCollection = db.collection("rooms");
+const likesCollection = db.collection("likes");
 
-// JWT verification middleware
+
+// --- INSECURE "verifyToken" Middleware ---
+// This middleware is for development and does not verify the token signature.
 const verifyToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'No token provided' });
-  }
-  
-  const token = authHeader.substring(7);
-  
-  try {
-    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
-    req.user = payload;
-    next();
-  } catch (error) {
-    return res.status(401).json({ message: 'Invalid token' });
-  }
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        req.user = {}; // Provide an empty user object
+        return next();
+    }
+    const token = authHeader.split(' ')[1];
+    try {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+        req.user = payload;
+        next();
+    } catch (error) {
+        req.user = {};
+        next();
+    }
 };
 
-// Initialize MongoDB connection
-async function connectDB() {
-  try {
-    if (!database) {
-      await client.connect();
-      await client.db("admin").command({ ping: 1 });
-      console.log("Connected to MongoDB!");
-      
-      // Initialize collections
-      database = client.db("roomMateFinder");
-      roomsCollection = database.collection("rooms");
-      usersCollection = database.collection("users");
-      likesCollection = database.collection("likes");
+
+// --- API Routes ---
+app.get('/', (req, res) => res.json({ message: 'Room Mate Finder API is running!' }));
+
+// GET all rooms for public Browse
+app.get('/rooms/all', async (req, res) => {
+    try {
+        const rooms = await roomsCollection.find({}).sort({ createdAt: -1 }).toArray();
+        res.json(rooms);
+    } catch (error) {
+        console.error('Error in /rooms/all:', error);
+        res.status(500).json({ message: 'Error fetching all rooms' });
     }
-    return true;
-  } catch (error) {
-    console.error("MongoDB connection error:", error);
-    return false;
-  }
+});
+
+// GET available rooms (public)
+app.get('/rooms/available', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 8;
+        const rooms = await roomsCollection.find({ availability: true }).limit(limit).toArray();
+        res.json(rooms);
+    } catch (error) {
+        console.error('Error in /rooms/available:', error);
+        res.status(500).json({ message: 'Error fetching available rooms' });
+    }
+});
+
+// GET rooms by user email (for dashboard)
+app.get('/rooms', verifyToken, async (req, res) => {
+    try {
+        const email = req.query.email;
+        if (!email) return res.status(400).json({ message: "Email query parameter is required." });
+        if (req.user.email !== email) return res.status(403).json({ message: "Forbidden" });
+
+        const rooms = await roomsCollection.find({ userEmail: email }).toArray();
+        res.json(rooms);
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+// GET a single room by ID
+app.get('/rooms/:id', async (req, res) => {
+    try {
+      const room = await roomsCollection.findOne({ _id: new ObjectId(req.params.id) });
+      if (!room) return res.status(404).json({ message: 'Room not found' });
+      res.json(room);
+    } catch (error) {
+      res.status(500).json({ message: 'Server error' });
+    }
+});
+
+// POST a new room listing
+app.post('/rooms', verifyToken, async (req, res) => {
+    try {
+        const roomData = { ...req.body, userEmail: req.user.email, likeCount: 0, createdAt: new Date() };
+        if (!roomData.title || !roomData.location) return res.status(400).json({ message: 'Missing required fields' });
+        const result = await roomsCollection.insertOne(roomData);
+        res.status(201).json({ message: 'Room listing added', insertedId: result.insertedId });
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+// UPDATE a room listing
+app.put('/rooms/:id', verifyToken, async (req, res) => {
+    try {
+        const { _id, ...updatedData } = req.body;
+        const result = await roomsCollection.updateOne(
+            { _id: new ObjectId(req.params.id), userEmail: req.user.email },
+            { $set: { ...updatedData, updatedAt: new Date() } }
+        );
+        if (result.matchedCount === 0) return res.status(404).json({ message: 'Room not found or you are not the owner.' });
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({ message: 'Update failed' });
+    }
+});
+
+// DELETE a room listing
+app.delete('/rooms/:id', verifyToken, async (req, res) => {
+    try {
+        const id = req.params.id;
+        const result = await roomsCollection.deleteOne({ _id: new ObjectId(id), userEmail: req.user.email });
+        if (result.deletedCount === 0) return res.status(404).json({ message: 'Room not found or you are not the owner.' });
+        await likesCollection.deleteMany({ roomId: id });
+        res.json({ message: 'Room deleted successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+// --- Like/Unlike Routes ---
+app.post('/rooms/:id/like', verifyToken, async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const userId = req.user.email;
+        if (!userId) return res.status(401).json({ message: "User not authenticated." });
+        await likesCollection.insertOne({ roomId, userId, createdAt: new Date() });
+        const updateResult = await roomsCollection.findOneAndUpdate({ _id: new ObjectId(roomId) }, { $inc: { likeCount: 1 } }, { returnDocument: 'after' });
+        res.json({ message: 'Room liked', likeCount: updateResult.likeCount, hasLiked: true });
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const userId = req.user.email;
+        if (!userId) return res.status(401).json({ message: "User not authenticated." });
+        await likesCollection.deleteOne({ roomId, userId });
+        const updateResult = await roomsCollection.findOneAndUpdate({ _id: new ObjectId(roomId) }, { $inc: { likeCount: -1 } }, { returnDocument: 'after' });
+        res.json({ message: 'Room unliked', likeCount: Math.max(0, updateResult.likeCount), hasLiked: false });
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
+    try {
+        const roomId = req.params.id;
+        const userId = req.user.email;
+        if (!userId) return res.json({ hasLiked: false, likeCount: 0 });
+        const existingLike = await likesCollection.findOne({ roomId, userId });
+        const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
+        res.json({ hasLiked: !!existingLike, likeCount: room?.likeCount || 0 });
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+app.get('/user/likes/:email', verifyToken, async (req, res) => {
+    try {
+        const userEmail = req.params.email;
+        if (req.user.email !== userEmail) return res.status(403).json({ message: 'Forbidden' });
+        const likedEntries = await likesCollection.find({ userId: userEmail }).sort({ createdAt: -1 }).toArray();
+        const roomIds = likedEntries.map(like => { try { return new ObjectId(like.roomId) } catch { return null } }).filter(Boolean);
+        if (roomIds.length === 0) return res.json([]);
+        const likedRooms = await roomsCollection.find({ _id: { $in: roomIds } }).toArray();
+        const sortedLikedRooms = likedEntries.map(like => likedRooms.find(room => room._id.toString() === like.roomId)).filter(Boolean);
+        res.json(sortedLikedRooms);
+    } catch (error) {
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+// --- Server Start Function ---
+async function startServer() {
+    try {
+        await client.connect();
+        console.log("Successfully connected to MongoDB!");
+        app.listen(port, () => {
+            console.log(`Server is running on port ${port}`);
+        });
+    } catch (error) {
+        console.error("Failed to connect to MongoDB and start server:", error);
+    }
 }
 
-// Base route
-app.get('/', (req, res) => {
-  res.json({ message: 'Room Mate Finder API is running!' });
-});
+startServer();
 
-// Debug route
-app.get('/debug', (req, res) => {
-  res.json({ 
-    message: 'Debug route working',
-    env: {
-      hasDBUser: !!process.env.DB_USER,
-      hasDBPass: !!process.env.DB_PASS,
-      nodeEnv: process.env.NODE_ENV
-    }
-  });
-});
-
-// POST route to add new room listing
-app.post('/rooms', async (req, res) => {
-  try {
-    await connectDB();
-    
-    const roomData = {
-      ...req.body,
-      likeCount: 0,
-      createdAt: new Date()
-    };
-
-    if (!roomData.title || !roomData.location || !roomData.rentAmount) {
-      return res.status(400).json({ message: 'Missing required fields' });
-    }
-
-    const result = await roomsCollection.insertOne(roomData);
-    res.status(201).json({ message: 'Room listing added', insertedId: result.insertedId });
-  } catch (error) {
-    console.error('Error adding room:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// GET all rooms
-app.get('/rooms', verifyToken, async (req, res) => {
-  try {
-    console.log('GET /rooms called');
-    
-    const connected = await connectDB();
-    if (!connected) {
-      return res.status(500).json({ message: 'Database connection failed' });
-    }
-    
-    console.log('Database connected, fetching rooms...');
-    
-    const email = req.query.email;
-    const filter = email ? { userEmail: email } : {};
-    const rooms = await roomsCollection.find(filter).toArray();
-    
-    console.log(`Found ${rooms.length} rooms`);
-    res.json(rooms);
-  } catch (error) {
-    console.error('Error fetching rooms:', error);
-    res.status(500).json({ 
-      message: 'Internal Server Error', 
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
-  }
-});
-
-// DELETE room
-app.delete('/rooms/:id', async (req, res) => {
-  try {
-    await connectDB();
-    
-    const id = req.params.id;
-    
-    await likesCollection.deleteMany({ roomId: id });
-    const result = await roomsCollection.deleteOne({ _id: new ObjectId(id) });
-    res.json(result);
-  } catch (error) {
-    console.error('Error deleting room:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// GET available rooms
-app.get('/rooms/available', async (req, res) => {
-  try {
-    await connectDB();
-    
-    const rooms = await roomsCollection.find({ availability: true }).limit(6).toArray();
-    res.json(rooms);
-  } catch (error) {
-    console.error('Error fetching available rooms:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// UPDATE room
-app.put('/rooms/:id', async (req, res) => {
-  try {
-    await connectDB();
-    
-    const id = req.params.id;
-    const { _id, ...updatedData } = req.body;
-
-    const result = await roomsCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { 
-        $set: {
-          ...updatedData,
-          updatedAt: new Date()
-        }
-      }
-    );
-    res.json(result);
-  } catch (error) {
-    console.error('Update failed:', error);
-    res.status(500).json({ message: 'Update failed' });
-  }
-});
-
-// GET single room by ID
-app.get('/rooms/:id', async (req, res) => {
-  try {
-    await connectDB();
-    
-    const id = req.params.id;
-    const room = await roomsCollection.findOne({ _id: new ObjectId(id) });
-
-    if (!room) {
-      return res.status(404).json({ message: 'Room not found' });
-    }
-
-    res.json(room);
-  } catch (error) {
-    console.error('Error fetching room by ID:', error);
-    res.status(500).json({ message: 'Server error' });
-  }
-});
-
-// LIKE a room (POST)
-app.post('/rooms/:id/like', verifyToken, async (req, res) => {
-  try {
-    await connectDB();
-    
-    const roomId = req.params.id;
-    const userId = req.user.id || req.user.email;
-    const forceMultiple = req.query.force === 'true';
-    
-    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-    if (!room) {
-      return res.status(404).json({ message: 'Room not found' });
-    }
-    
-    const isOwner = (
-      userId === room.ownerId || 
-      userId === room.userId || 
-      userId === room.userUid || 
-      userId === room.createdBy ||
-      userId === room.owner?.uid ||
-      userId === room.owner?.id ||
-      userId === room.userEmail ||
-      req.user.email === room.userEmail
-    );
-    
-    if (isOwner) {
-      return res.status(400).json({ message: 'You cannot like your own room posting' });
-    }
-    
-    if (forceMultiple) {
-      await likesCollection.insertOne({
-        roomId: roomId,
-        userId: userId,
-        createdAt: new Date()
-      });
-      
-      await roomsCollection.updateOne(
-        { _id: new ObjectId(roomId) },
-        { $inc: { likeCount: 1 } }
-      );
-      
-      const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-      
-      return res.json({ 
-        message: 'Room liked successfully',
-        likeCount: updatedRoom.likeCount,
-        hasLiked: true
-      });
-    }
-    
-    const existingLike = await likesCollection.findOne({
-      roomId: roomId,
-      userId: userId
-    });
-    
-    if (existingLike) {
-      return res.status(400).json({ message: 'You have already liked this room' });
-    }
-    
-    await likesCollection.insertOne({
-      roomId: roomId,
-      userId: userId,
-      createdAt: new Date()
-    });
-    
-    await roomsCollection.updateOne(
-      { _id: new ObjectId(roomId) },
-      { $inc: { likeCount: 1 } }
-    );
-    
-    const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-    res.json({ 
-      message: 'Room liked successfully',
-      likeCount: updatedRoom.likeCount,
-      hasLiked: true
-    });
-  } catch (error) {
-    console.error('Error liking room:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// UNLIKE a room (DELETE)
-app.delete('/rooms/:id/like', verifyToken, async (req, res) => {
-  try {
-    await connectDB();
-    
-    const roomId = req.params.id;
-    const userId = req.user.id || req.user.email;
-    
-    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-    if (!room) {
-      return res.status(404).json({ message: 'Room not found' });
-    }
-    
-    const isOwner = (
-      userId === room.ownerId || 
-      userId === room.userId || 
-      userId === room.userUid || 
-      userId === room.createdBy ||
-      userId === room.owner?.uid ||
-      userId === room.owner?.id ||
-      userId === room.userEmail ||
-      req.user.email === room.userEmail
-    );
-    
-    if (isOwner) {
-      return res.status(400).json({ message: 'You cannot unlike your own room posting' });
-    }
-    
-    const existingLike = await likesCollection.findOne({
-      roomId: roomId,
-      userId: userId
-    });
-    
-    if (!existingLike) {
-      return res.status(400).json({ message: 'You have not liked this room' });
-    }
-    
-    await likesCollection.deleteOne({
-      roomId: roomId,
-      userId: userId
-    });
-    
-    await roomsCollection.updateOne(
-      { _id: new ObjectId(roomId) },
-      { $inc: { likeCount: -1 } }
-    );
-    
-    const updatedRoom = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-    res.json({ 
-      message: 'Room unliked successfully',
-      likeCount: Math.max(0, updatedRoom.likeCount),
-      hasLiked: false
-    });
-  } catch (error) {
-    console.error('Error unliking room:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// CHECK if user has liked a room
-app.get('/rooms/:id/like-status', verifyToken, async (req, res) => {
-  try {
-    await connectDB();
-    
-    const roomId = req.params.id;
-    const userId = req.user.id || req.user.email;
-    
-    const existingLike = await likesCollection.findOne({
-      roomId: roomId,
-      userId: userId
-    });
-    
-    const room = await roomsCollection.findOne({ _id: new ObjectId(roomId) });
-    
-    res.json({
-      hasLiked: !!existingLike,
-      likeCount: room ? room.likeCount || 0 : 0
-    });
-  } catch (error) {
-    console.error('Error checking like status:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// GET all users who liked a specific room
-app.get('/rooms/:id/likes', verifyToken, async (req, res) => {
-  try {
-    await connectDB();
-    
-    const roomId = req.params.id;
-    
-    const likes = await likesCollection.aggregate([
-      { $match: { roomId: roomId } },
-      {
-        $lookup: {
-          from: "users",
-          localField: "userId",
-          foreignField: "email",
-          as: "userDetails"
-        }
-      },
-      {
-        $project: {
-          userId: 1,
-          createdAt: 1,
-          userDetails: { $arrayElemAt: ["$userDetails", 0] }
-        }
-      }
-    ]).toArray();
-    
-    res.json(likes);
-  } catch (error) {
-    console.error('Error fetching likes:', error);
-    res.status(500).json({ message: 'Internal Server Error' });
-  }
-});
-
-// For Vercel serverless function
 module.exports = app;
